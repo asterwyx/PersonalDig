@@ -31,5 +31,8 @@
 *.out
 *.app
 
-#swp file
+# Swp file
 *.swp
+
+# Vscode folder
+.vscode/

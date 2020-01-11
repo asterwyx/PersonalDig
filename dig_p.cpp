@@ -16,11 +16,7 @@
 #define CNAME 5					// CNAME record type
 #define INTERNET_DATA 1			// Internet query class
 #define MAX_SIZE 4096
-
-static short conversationId = 0;
-int setQueryMsg(char *domainName, unsigned char *buffer, int queryType, int queryClass);
-int parseResponse(unsigned char *response, int responseLen);			// Parse DNS response
-
+#define MAX_MALLOC_TRY 3
 
 #pragma (push,1)
 typedef struct dns_header {
@@ -31,6 +27,7 @@ typedef struct dns_header {
 	unsigned short tc_flag:1;     // 1 for truncated, 0 for not
 	unsigned short rd_flag:1;     // Desire recursive query
 	unsigned short ra_flag:1;     // Whether recursive query is available
+	unsigned short :3;
 	unsigned short rcode_flag:4;  // Return code, 0 for success, 3 for name error, 2 for server error
 	unsigned short qd_count;			// Queries count
 	unsigned short an_count;			// Answers count
@@ -55,10 +52,22 @@ typedef struct resource_record {
 } RES_RECORD;
 
 typedef struct query {
-	DNS_HEADER header;
-	QUESTION question_sec;
+	DNS_HEADER *header;
+	QUESTION *question_sec;
 } QUERY;
 
+typedef struct response {
+	DNS_HEADER *header;
+	QUESTION *question_sec;
+	RES_RECORD *answer_sec;
+	RES_RECORD *authority_sec;
+	RES_RECORD *additional_sec;
+} RESPONSE;
+
+static short conversationId = 0;
+int setQueryMsg(char *domainName, unsigned char *buffer, int queryType, int queryClass);
+RESPONSE* parseResponse(unsigned char *response, int responseLen, int queryLen);			// Parse DNS response
+unsigned char *changeNetStrToNormal(unsigned char *netStr, int *netStrLem, int *normalStrLen, int netStrType);
 
 
 
@@ -103,11 +112,13 @@ int main(int argc, char *argv[])
 	int responseLen = recv(sendSock, responseMsg, MAX_SIZE, 0);
 	printf("Received size: %d\n", responseLen);	
 	// For debugging, print reponse
+	RESPONSE* response = parseResponse(responseMsg, responseLen, requestLen);
 	for (int i = 0; i < responseLen; i++)
 	{
 		printf("%x ", responseMsg[i]);
 	}
 	printf("\n");
+	printf("%s", response->question_sec->domainName);
 	return 0;
 }
 
@@ -168,3 +179,183 @@ int setQueryMsg(char *domainName, unsigned char *buffer, int queryType, int quer
 }
 
 
+RESPONSE* parseResponse(unsigned char *response, int responseLen, int queryLen)
+{
+	unsigned short *cursor;
+	RESPONSE *result = (RESPONSE *)malloc(sizeof(RESPONSE));
+	memset(result, 0, sizeof(RESPONSE));
+	cursor = (unsigned short *)response;
+	result->header->conversation_id = ntohs(*cursor);   // Change net order to host order
+	// Set flag
+	cursor++;
+	result->header->qr_flag = ((*cursor) >> 7) & 0x0001;
+	result->header->opcode_flag = ((*cursor) >> 3) & 0x000f;
+	result->header->aa_flag = ((*cursor) >> 2) & 0x0001;
+	result->header->tc_flag = ((*cursor) >> 1) & 0x0001;
+	result->header->rd_flag = (*cursor) & 0x0001;
+	result->header->ra_flag = ((*cursor) >> 15) & 0x0001;
+	result->header->rcode_flag = ((*cursor) >> 8) & 0x000f;
+	// Set query count
+	cursor++;
+	result->header->qd_count = ntohs(*cursor);
+	// Set answer count
+	cursor++;
+	result->header->an_count = ntohs(*cursor);
+	// Set name server count
+	cursor++;
+	result->header->ns_count = ntohs(*cursor);
+	// Set additional records count
+	cursor++;
+	result->header->ar_count = ntohs(*cursor);
+	// Set question_sec and resource_records sec
+	int nameLen, netStrLen;
+	result->question_sec->domainName =  changeNetStrToNormal(response + 12, &netStrLen, &nameLen, CNAME);
+	result->question_sec->qtype = ntohs(*(unsigned short *)(response + queryLen - 4));
+	result->question_sec->qclass = ntohs(*(unsigned short *)(response + queryLen - 2));
+	
+	int counter = 0;
+	do
+	{
+		result->answer_sec = (RES_RECORD *)malloc(sizeof(RES_RECORD) * result->header->an_count);	
+		counter++;
+	} while(result->answer_sec == NULL && counter < MAX_MALLOC_TRY);
+	counter = 0;
+	do
+	{
+		result->authority_sec = (RES_RECORD *)malloc(sizeof(RES_RECORD) * result->header->ns_count);
+		counter++;
+	} while(result->authority_sec == NULL && counter < MAX_MALLOC_TRY);
+	counter = 0;
+	do
+	{
+		result->additional_sec = (RES_RECORD *)malloc(sizeof(RES_RECORD) * result->header->ar_count);
+		counter++;	
+	} while(result->additional_sec == NULL && counter < MAX_MALLOC_TRY);
+	if (result->answer_sec == NULL || result->authority_sec == NULL || result->additional_sec == NULL)
+	{
+		perror("Malloc failed, out of space!!!");
+		free(result);
+		return NULL;
+	}
+	int readPos = queryLen;
+	for (int i = 0; i < result->header->an_count; i++)
+	{
+		unsigned short *readPtr = (unsigned short *)(response + readPos);
+		int posOffset = 0;
+		int normalStrLen = 0;
+		if ((ntohs(*readPtr) >> 14) == 0x0003)
+		{
+			result->answer_sec[i].name = changeNetStrToNormal(response + (ntohs(*readPtr) & 0x3fff), &posOffset, &normalStrLen, CNAME);
+			readPos += 2;
+		}
+		else
+		{
+			result->answer_sec[i].name = changeNetStrToNormal(response, &posOffset, &normalStrLen, CNAME);
+			readPos += posOffset;
+		}
+		readPtr = (unsigned short *)(response + readPos);
+		result->answer_sec[i].type = ntohs(*readPtr);
+		readPtr++;
+		result->answer_sec[i]._class = ntohs(*readPtr);
+		readPtr++;
+		result->answer_sec[i].data_length = ntohs(*readPtr);
+		readPos += 6;
+		result->answer_sec[i].data = changeNetStrToNormal(response + readPos, &posOffset, &normalStrLen, result->answer_sec[i].type);
+		readPos += posOffset;
+	}
+
+	for (int i = 0; i < result->header->ns_count; i++)
+	{
+		unsigned short *readPtr = (unsigned short *)(response + readPos);
+		int posOffset = 0;
+		int normalStrLen = 0;
+		if ((ntohs(*readPtr) >> 14) == 0x0003)
+		{
+			result->authority_sec[i].name = changeNetStrToNormal(response + (ntohs(*readPtr) & 0x3fff), &posOffset, &normalStrLen, CNAME);
+			readPos += 2;
+		}
+		else
+		{
+			result->authority_sec[i].name = changeNetStrToNormal(response, &posOffset, &normalStrLen, CNAME);
+			readPos += posOffset;
+		}
+		readPtr = (unsigned short *)(response + readPos);
+		result->authority_sec[i].type = ntohs(*readPtr);
+		readPtr++;
+		result->authority_sec[i]._class = ntohs(*readPtr);
+		readPtr++;
+		result->authority_sec[i].data_length = ntohs(*readPtr);
+		readPos += 6;
+		result->authority_sec[i].data = changeNetStrToNormal(response + readPos, &posOffset, &normalStrLen, result->authority_sec[i].type);
+		readPos += posOffset;
+	}
+
+	for (int i = 0; i < result->header->ar_count; i++)
+	{
+		unsigned short *readPtr = (unsigned short *)(response + readPos);
+		int posOffset = 0;
+		int normalStrLen = 0;
+		if ((ntohs(*readPtr) >> 14) == 0x0003)
+		{
+			result->additional_sec[i].name = changeNetStrToNormal(response + (ntohs(*readPtr) & 0x3fff), &posOffset, &normalStrLen, CNAME);
+			readPos += 2;
+		}
+		else
+		{
+			result->additional_sec[i].name = changeNetStrToNormal(response, &posOffset, &normalStrLen, CNAME);
+			readPos += posOffset;
+		}
+		readPtr = (unsigned short *)(response + readPos);
+		result->additional_sec[i].type = ntohs(*readPtr);
+		readPtr++;
+		result->additional_sec[i]._class = ntohs(*readPtr);
+		readPtr++;
+		result->additional_sec[i].data_length = ntohs(*readPtr);
+		readPos += 6;
+		result->additional_sec[i].data = changeNetStrToNormal(response + readPos, &posOffset, &normalStrLen, result->additional_sec[i].type);
+		readPos += posOffset;
+	}
+	return result;
+}
+
+unsigned char *changeNetStrToNormal(unsigned char *netStr, int *netStrLen, int *normalStrLen, int netStrType)
+{
+	*netStrLen = 0;
+	*normalStrLen = 0;
+	char *buffer = (char *)malloc(MAX_SIZE);
+	int cursor = 0;
+	switch (netStrType)
+	{
+		case A:
+			*netStrLen = 4;
+			sprintf(buffer, "%u.%u.%u.%u", netStr[0], netStr[1], netStr[2], netStr[3]);
+			*normalStrLen = strlen(buffer);
+			break;
+		case CNAME:
+			while (1)
+			{
+				if (netStr[cursor] != 0)
+				{
+					for	(int i = 1; i <= netStr[cursor]; i++)
+					{
+						buffer[(*normalStrLen)++] = netStr[cursor + i];
+					}
+					buffer[(*normalStrLen)++] = '.';
+					*netStrLen += netStr[cursor] + 1;
+				}
+				else
+				{
+					(*netStrLen)++;
+					buffer[--(*normalStrLen)] = '\0';
+					break;
+				}
+			}
+			break;
+		default:
+			break;
+	}
+	char *result = (char *)malloc(*normalStrLen + 1);
+	strcpy(result, buffer);
+	free(buffer);
+	return (unsigned char *)result;
+}
