@@ -7,6 +7,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <unistd.h>
 
 
 #define DNS_SERVER "127.0.0.53"	// Local DNS server
@@ -110,15 +111,84 @@ int main(int argc, char *argv[])
 		printf("Failed!\n");
 	}
 	int responseLen = recv(sendSock, responseMsg, MAX_SIZE, 0);
+	
+	// Close socket
+	close(sendSock);
+
 	printf("Received size: %d\n", responseLen);	
 	// For debugging, print reponse
-	RESPONSE* response = parseResponse(responseMsg, responseLen, requestLen);
 	for (int i = 0; i < responseLen; i++)
 	{
 		printf("%x ", responseMsg[i]);
 	}
-	printf("\n");
-	printf("%s", response->question_sec->domainName);
+	printf("\n\n\n");
+	RESPONSE* response = parseResponse(responseMsg, responseLen, requestLen);
+	printf("----------start----------");
+	printf("\nHeader section:\n\n");
+	printf("Conversation id: %d\n" 
+		"Query or response flag: %d\n"
+		"Operation code flag: %d\n"
+		"Authoritive answer flag: %d\n"
+		"Truncated flag: %d\n"
+		"Recursion desired flag: %d\n"
+		"Resursion available flag: %d\n"
+		"Return code flag: %d\n"
+		"Queries count: %d\n"
+		"Answers count: %d\n"
+		"Name servers count: %d\n"
+		"Additional records count: %d\n"
+		, response->header->conversation_id
+		, response->header->qr_flag
+		, response->header->opcode_flag
+		, response->header->aa_flag
+		, response->header->tc_flag
+		, response->header->rd_flag
+		, response->header->ra_flag
+		, response->header->rcode_flag
+		, response->header->qd_count
+		, response->header->an_count
+		, response->header->ns_count
+		, response->header->ar_count);
+	printf("\nQuestion section:\n\n");
+	printf("DomainName		QueryType		QueryClass\n");
+	printf("%s		%u			%u\n", response->question_sec->domainName, response->question_sec->qtype, response->question_sec->qclass);
+	
+	printf("\nAnswer section\n\n");
+	printf("Name			Type			Class			Data			TTL\n");
+	for (int i = 0; i < response->header->an_count; i++)
+	{
+		printf("%s		%u			%u			%s			%u\n"
+			, response->answer_sec[i].name
+			, response->answer_sec[i].type
+			, response->answer_sec[i]._class
+			, response->answer_sec[i].data
+			, response->answer_sec[i].ttl);
+	}
+
+	printf("\nName server section\n\n");
+	printf("Name			Type			Class			Data			TTL\n");
+	for (int i = 0; i < response->header->ns_count; i++)
+	{	
+		printf("%s		%u			%u			%s			%u\n"
+			, response->authority_sec[i].name
+			, response->authority_sec[i].type
+			, response->authority_sec[i]._class
+			, response->authority_sec[i].data
+			, response->authority_sec[i].ttl);
+	}
+
+	printf("\nAdditional section\n\n");
+	printf("Name			Type			Class			Data			TTL\n");
+	for (int i = 0; i < response->header->ar_count; i++)
+	{
+		printf("%s		%u			%u			%s			%u\n"
+			, response->additional_sec[i].name
+			, response->additional_sec[i].type
+			, response->additional_sec[i]._class
+			, response->additional_sec[i].data
+			, response->additional_sec[i].ttl);
+	}
+	printf("-----------end-----------\n");
 	return 0;
 }
 
@@ -184,6 +254,10 @@ RESPONSE* parseResponse(unsigned char *response, int responseLen, int queryLen)
 	unsigned short *cursor;
 	RESPONSE *result = (RESPONSE *)malloc(sizeof(RESPONSE));
 	memset(result, 0, sizeof(RESPONSE));
+	result->header = (DNS_HEADER *)malloc(sizeof(DNS_HEADER));
+	memset(result->header, 0, sizeof(DNS_HEADER));
+	result->question_sec = (QUESTION *)malloc(sizeof(QUESTION));
+	memset(result->question_sec, 0, sizeof(QUESTION));
 	cursor = (unsigned short *)response;
 	result->header->conversation_id = ntohs(*cursor);   // Change net order to host order
 	// Set flag
@@ -237,6 +311,7 @@ RESPONSE* parseResponse(unsigned char *response, int responseLen, int queryLen)
 		free(result);
 		return NULL;
 	}
+	// Start parse answers and RRs
 	int readPos = queryLen;
 	for (int i = 0; i < result->header->an_count; i++)
 	{
@@ -258,8 +333,10 @@ RESPONSE* parseResponse(unsigned char *response, int responseLen, int queryLen)
 		readPtr++;
 		result->answer_sec[i]._class = ntohs(*readPtr);
 		readPtr++;
+		result->answer_sec[i].ttl = ntohl(*(unsigned int *)readPtr);
+		readPtr += 4;
 		result->answer_sec[i].data_length = ntohs(*readPtr);
-		readPos += 6;
+		readPos += 10;
 		result->answer_sec[i].data = changeNetStrToNormal(response + readPos, &posOffset, &normalStrLen, result->answer_sec[i].type);
 		readPos += posOffset;
 	}
@@ -284,8 +361,10 @@ RESPONSE* parseResponse(unsigned char *response, int responseLen, int queryLen)
 		readPtr++;
 		result->authority_sec[i]._class = ntohs(*readPtr);
 		readPtr++;
+		result->authority_sec[i].ttl = ntohl(*(unsigned int *)readPtr);
+		readPtr += 4;
 		result->authority_sec[i].data_length = ntohs(*readPtr);
-		readPos += 6;
+		readPos += 10;
 		result->authority_sec[i].data = changeNetStrToNormal(response + readPos, &posOffset, &normalStrLen, result->authority_sec[i].type);
 		readPos += posOffset;
 	}
@@ -310,8 +389,10 @@ RESPONSE* parseResponse(unsigned char *response, int responseLen, int queryLen)
 		readPtr++;
 		result->additional_sec[i]._class = ntohs(*readPtr);
 		readPtr++;
+		result->additional_sec[i].ttl = ntohl(*(unsigned int *)readPtr);
+		readPtr += 4;
 		result->additional_sec[i].data_length = ntohs(*readPtr);
-		readPos += 6;
+		readPos += 10;
 		result->additional_sec[i].data = changeNetStrToNormal(response + readPos, &posOffset, &normalStrLen, result->additional_sec[i].type);
 		readPos += posOffset;
 	}
@@ -334,7 +415,22 @@ unsigned char *changeNetStrToNormal(unsigned char *netStr, int *netStrLen, int *
 		case CNAME:
 			while (1)
 			{
-				if (netStr[cursor] != 0)
+				if (netStr[cursor] == 0)
+				{
+					(*netStrLen)++;
+					buffer[--(*normalStrLen)] = '\0';
+					break;
+				}
+				else if ((netStr[cursor] >> 6) & 0x03 == 0x03)
+				{
+					(*netStrLen) += 2;
+					int addStrLen = 0, addNetLen = 0;
+					unsigned char *addStr = changeNetStrToNormal(netStr + (ntohs(*(unsigned short *)(netStr + cursor)) & 0x3fff), &addNetLen, &addStrLen, CNAME);
+					strcpy(buffer + *normalStrLen, (char *)addStr);
+					*normalStrLen += addStrLen;
+					break;
+				}
+				else
 				{
 					for	(int i = 1; i <= netStr[cursor]; i++)
 					{
@@ -342,12 +438,7 @@ unsigned char *changeNetStrToNormal(unsigned char *netStr, int *netStrLen, int *
 					}
 					buffer[(*normalStrLen)++] = '.';
 					*netStrLen += netStr[cursor] + 1;
-				}
-				else
-				{
-					(*netStrLen)++;
-					buffer[--(*normalStrLen)] = '\0';
-					break;
+					cursor += netStr[cursor] + 1;
 				}
 			}
 			break;
