@@ -71,15 +71,22 @@ typedef struct response {
 typedef struct print_option
 {
 	// TODO
+	bool noall;			// Have no all below, just display answers
+	bool nocomments;	// Have no prompt
+	bool nostats;		// Have no stats
+	bool noquestions;	// Have no question section
+	bool noadditional;	// Have no additional section
 } p_option_t;
 
 
 
 static short conversationId = 0;
-int setQueryMsg(char *domainName, unsigned char *buffer, int queryType, int queryClass);
-RESPONSE* parseResponse(unsigned char *response, int responseLen, int queryLen);			// Parse DNS response
-unsigned char *changeNetStrToNormal(unsigned char *netStr, int *netStrLem, int *normalStrLen, int netStrType, unsigned char *context);
-int printResult(RESPONSE *response, p_option_t *print_options);
+int setQueryMsg(char *domainName, unsigned char *buffer, int queryType, int queryClass);												// Set query struct
+RESPONSE* parseResponse(unsigned char *response, int responseLen, int queryLen);														// Parse DNS response
+unsigned char *changeNetStrToNormal(unsigned char *netStr, int *netStrLem, int *normalStrLen, int netStrType, unsigned char *context);	// Change net form to normal
+unsigned char *changeNormalStrToNet(unsigned char *normalStr, int *normalStrLen, int *netStrLen, int netStrType);						// Change normal form to net
+int printResult(RESPONSE *response, p_option_t *print_options);																			// Print result
+int setQueryHeader(DNS_HEADER *header, int operation_code, int truncated, int recursionDesirable);										// Set header by args
 
 
 
@@ -98,10 +105,12 @@ int main(int argc, char *argv[])
 	// Set query message
 	int requestLen = setQueryMsg(queryDomainName, queryMsg, A, INTERNET_DATA);		// Query A record of domain name
 	// For debugging, print request
+	/*
 	for (int i = 0; i < requestLen; i++)
 	{
 		printf("%x ", queryMsg[i]);
 	}
+	*/
 	printf("\n");
 	
 	struct sockaddr_in dest_addr;
@@ -133,72 +142,7 @@ int main(int argc, char *argv[])
 	}
 	printf("\n\n\n");
 	RESPONSE* response = parseResponse(responseMsg, responseLen, requestLen);
-	printf("----------start----------");
-	printf("\nHeader section:\n\n");
-	printf("Conversation id: %d\n" 
-		"Query or response flag: %d\n",
-		"Operation code flag: %d\n"
-		"Authoritive answer flag: %d\n"
-		"Truncated flag: %d\n"
-		"Recursion desired flag: %d\n"
-		"Resursion available flag: %d\n"
-		"Return code flag: %d\n"
-		"Queries count: %d\n"
-		"Answers count: %d\n"
-		"Name servers count: %d\n"
-		"Additional records count: %d\n"
-		, response->header->conversation_id
-		, response->header->qr_flag
-		, response->header->opcode_flag
-		, response->header->aa_flag
-		, response->header->tc_flag
-		, response->header->rd_flag
-		, response->header->ra_flag
-		, response->header->rcode_flag
-		, response->header->qd_count
-		, response->header->an_count
-		, response->header->ns_count
-		, response->header->ar_count);
-	printf("\nQuestion section:\n\n");
-	printf("DomainName               QueryType    QueryClass\n");
-	printf("%-25s%-13u%-u\n", response->question_sec->domainName, response->question_sec->qtype, response->question_sec->qclass);
-	
-	printf("\nAnswer section\n\n");
-	printf("Name                     TTL     Type     Class    Data\n");
-	for (int i = 0; i < response->header->an_count; i++)
-	{
-		printf("%-25s%-8u%-9u%-9u%-s\n"
-			, response->answer_sec[i].name
-			, response->answer_sec[i].ttl
-			, response->answer_sec[i].type
-			, response->answer_sec[i]._class
-			, response->answer_sec[i].data);
-	}
-
-	printf("\nName server section\n\n");
-	printf("Name                     TTL     Type     Class    Data\n");
-	for (int i = 0; i < response->header->ns_count; i++)
-	{	
-		printf("%-25s%-8u%-9u%-9u%-s\n"
-			, response->authority_sec[i].name
-			, response->authority_sec[i].ttl
-			, response->authority_sec[i].type
-			, response->authority_sec[i]._class
-			, response->authority_sec[i].data);
-	}
-
-	printf("\nAdditional section\n\n");
-	printf("Name                     TTL     Type     Class    Data\n");
-	for (int i = 0; i < response->header->ar_count; i++)
-	{
-		printf("%-25s%-8u%-9u%-9u%-s\n"
-			, response->additional_sec[i].name
-			, response->additional_sec[i].ttl
-			, response->additional_sec[i].type
-			, response->additional_sec[i]._class
-			, response->additional_sec[i].data);
-	}
-	printf("-----------end-----------\n");
+	printResult(response, NULL);
 	return 0;
 }
 
@@ -459,4 +403,85 @@ unsigned char *changeNetStrToNormal(unsigned char *netStr, int *netStrLen, int *
 	strcpy(result, buffer);
 	free(buffer);
 	return (unsigned char *)result;
+}
+
+unsigned char *changeNormalStrToNet(unsigned char *normalStr, int *normalStrLen, int *netStrLen, int netStrType)
+{
+	return NULL;
+}
+
+int printResult(RESPONSE *response, p_option_t *print_options)
+{
+	printf("----------start----------");
+	printf("\nHeader section:\n\n");
+	printf("Conversation id: %d\n" 
+		"Query or response flag: %d\n",
+		"Operation code flag: %d\n"
+		"Authoritive answer flag: %d\n"
+		"Truncated flag: %d\n"
+		"Recursion desired flag: %d\n"
+		"Resursion available flag: %d\n"
+		"Return code flag: %d\n"
+		"Queries count: %d\n"
+		"Answers count: %d\n"
+		"Name servers count: %d\n"
+		"Additional records count: %d\n"
+		, response->header->conversation_id
+		, response->header->qr_flag
+		, response->header->opcode_flag
+		, response->header->aa_flag
+		, response->header->tc_flag
+		, response->header->rd_flag
+		, response->header->ra_flag
+		, response->header->rcode_flag
+		, response->header->qd_count
+		, response->header->an_count
+		, response->header->ns_count
+		, response->header->ar_count);
+	printf("\nQuestion section:\n\n");
+	printf("DomainName               QueryType    QueryClass\n");
+	printf("%-25s%-13u%-u\n", response->question_sec->domainName, response->question_sec->qtype, response->question_sec->qclass);
+	
+	printf("\nAnswer section\n\n");
+	printf("Name                     TTL     Type     Class    Data\n");
+	for (int i = 0; i < response->header->an_count; i++)
+	{
+		printf("%-25s%-8u%-9u%-9u%-s\n"
+			, response->answer_sec[i].name
+			, response->answer_sec[i].ttl
+			, response->answer_sec[i].type
+			, response->answer_sec[i]._class
+			, response->answer_sec[i].data);
+	}
+
+	printf("\nName server section\n\n");
+	printf("Name                     TTL     Type     Class    Data\n");
+	for (int i = 0; i < response->header->ns_count; i++)
+	{	
+		printf("%-25s%-8u%-9u%-9u%-s\n"
+			, response->authority_sec[i].name
+			, response->authority_sec[i].ttl
+			, response->authority_sec[i].type
+			, response->authority_sec[i]._class
+			, response->authority_sec[i].data);
+	}
+
+	printf("\nAdditional section\n\n");
+	printf("Name                     TTL     Type     Class    Data\n");
+	for (int i = 0; i < response->header->ar_count; i++)
+	{
+		printf("%-25s%-8u%-9u%-9u%-s\n"
+			, response->additional_sec[i].name
+			, response->additional_sec[i].ttl
+			, response->additional_sec[i].type
+			, response->additional_sec[i]._class
+			, response->additional_sec[i].data);
+	}
+	printf("-----------end-----------\n");
+	return 0;
+}
+
+int setQueryHeader(DNS_HEADER *header, int operation_code, int truncated, int recursionDesirable)
+{
+	return 0;
 }
