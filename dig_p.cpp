@@ -10,17 +10,22 @@
 #include <unistd.h>
 
 
-#define DNS_SERVER "127.0.0.53"	// Local DNS server
-#define SERV_PORT 53			// Standard DNS query port
-#define A 1						// A record type
-#define NS 2					// NS record type
-#define CNAME 5					// CNAME record type
-#define INTERNET_DATA 1			// Internet query class
-#define MAX_SIZE 4096
-#define MAX_MALLOC_TRY 3
-
+#define DNS_SERVER 		"127.0.0.53"	// Local DNS server
+#define SERV_PORT 		53			// Standard DNS query port
+#define A 				1						// A record type
+#define NS 				2					// NS record type
+#define CNAME 			5					// CNAME record type
+#define IN_DATA 	1			// Internet query class
+#define MAX_SIZE 		2048
+#define MAX_MALLOC_TRY 	3
+#define OK				0
+#define FAIL			-1
+#define YES				1
+#define NO				0
+#define STD_QUERY  		0
+#define MAX_ID			10000
 typedef unsigned char byte;
-#pragma (push,1)
+#pragma pack(1)
 typedef struct dns_header {
 	unsigned short conversation_id;  // Conversation identifier
 	unsigned short qr_flag:1;     // Query or response flag, 0 for query, 1 for response
@@ -36,7 +41,7 @@ typedef struct dns_header {
 	unsigned short ns_count;			// Number of name server resource records
 	unsigned short ar_count;			// Number of resource records in the additional records section
 } DNS_HEADER;
-#pragma (pop)
+#pragma pack()
 
 typedef struct question {
 	unsigned short qtype;
@@ -78,39 +83,64 @@ typedef struct print_option
 	bool noadditional;	// Have no additional section
 } p_option_t;
 
-
+typedef struct args_pack
+{
+	int queryType;
+	int queryClass;
+	int operationCode;
+	int truncated;
+	int recursionDesirable;
+	int isReversal;
+	unsigned char queryDomainName[MAX_SIZE];
+	unsigned char queryMsg[MAX_SIZE];
+	unsigned char responseMsg[MAX_SIZE];
+	int queryLen;
+	int responseLen;
+} args_pack_t;
 
 static short conversationId = 0;
+void setQueryQuestion(unsigned char *domainName, QUESTION *question, int queryType, int queryClass);
+int printQueryToBuf(QUERY *query, unsigned char *buffer, int *bufferSize, int isReversal);
 int setQueryMsg(char *domainName, unsigned char *buffer, int queryType, int queryClass);												// Set query struct
 RESPONSE* parseResponse(unsigned char *response, int responseLen, int queryLen);														// Parse DNS response
 unsigned char *changeNetStrToNormal(unsigned char *netStr, int *netStrLem, int *normalStrLen, int netStrType, unsigned char *context);	// Change net form to normal
 unsigned char *changeNormalStrToNet(unsigned char *normalStr, int *normalStrLen, int *netStrLen, int netStrType);						// Change normal form to net
 int printResult(RESPONSE *response, p_option_t *print_options);																			// Print result
-int setQueryHeader(DNS_HEADER *header, int operation_code, int truncated, int recursionDesirable);										// Set header by args
-
-
+void setQueryHeader(DNS_HEADER *header, int operation_code, int truncated, int recursionDesirable);										// Set header by arg
+void setArgs(int argc, char *argv[], args_pack_t *args);
+void initArgs(args_pack_t *args);
 
 // Main function
 int main(int argc, char *argv[])
 {
-	char queryDomainName[MAX_SIZE] = "localhost";
+	args_pack_t *queryArgs = (args_pack_t *)malloc(sizeof(args_pack_t));
+	initArgs(queryArgs);
 	if (argc > 1)
 	{
-		strcpy(queryDomainName, argv[argc - 1]);
+		strcpy((char *)queryArgs->queryDomainName, argv[argc - 1]);
 	}
 	// Try to query from DNS server set by /etc/resolv.conf
 	// First Mannuly set server
-	unsigned char queryMsg[MAX_SIZE];
-	unsigned char responseMsg[MAX_SIZE];
 	// Set query message
-	int requestLen = setQueryMsg(queryDomainName, queryMsg, A, INTERNET_DATA);		// Query A record of domain name
-	// For debugging, print request
-	/*
-	for (int i = 0; i < requestLen; i++)
+	//requestLen = setQueryMsg(queryDomainName, queryMsg, A, INTERNET_DATA);		// Query A record of domain name
+	QUERY *query = (QUERY *)malloc(sizeof(QUERY));
+	if (query == NULL)
 	{
-		printf("%x ", queryMsg[i]);
+		perror("Out of space!");
+		return 0;
 	}
-	*/
+	query->header = (DNS_HEADER *)malloc(sizeof(DNS_HEADER));
+	query->question_sec = (QUESTION *)malloc(sizeof(QUESTION));
+	setQueryHeader(query->header, queryArgs->operationCode, queryArgs->truncated, queryArgs->recursionDesirable);
+	setQueryQuestion(queryArgs->queryDomainName, query->question_sec, queryArgs->queryType, queryArgs->queryClass);
+	printQueryToBuf(query, queryArgs->queryMsg, &queryArgs->queryLen, queryArgs->isReversal);
+	
+	// For debugging, print request
+	
+	for (int i = 0; i < queryArgs->queryLen; i++)
+	{
+		printf("%x ", queryArgs->queryMsg[i]);
+	}
 	printf("\n");
 	
 	struct sockaddr_in dest_addr;
@@ -119,7 +149,7 @@ int main(int argc, char *argv[])
 	dest_addr.sin_family = AF_INET;
 	dest_addr.sin_port = htons(SERV_PORT);
 	int sendSock = socket(PF_INET, SOCK_DGRAM, 0);
-	int sentSize = sendto(sendSock, queryMsg, requestLen, 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+	int sentSize = sendto(sendSock, queryArgs->queryMsg, queryArgs->queryLen, 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
 	if (sentSize > 0)
 	{
 		printf("Successfully send queries!\n");
@@ -129,23 +159,92 @@ int main(int argc, char *argv[])
 	{
 		printf("Failed!\n");
 	}
-	int responseLen = recv(sendSock, responseMsg, MAX_SIZE, 0);
+	queryArgs->responseLen = recv(sendSock, queryArgs->responseMsg, MAX_SIZE, 0);
 	
 	// Close socket
 	close(sendSock);
 
-	printf("Received size: %d\n", responseLen);	
+	printf("Received size: %d\n", queryArgs->responseLen);	
 	// For debugging, print reponse
-	for (int i = 0; i < responseLen; i++)
+	
+	for (int i = 0; i < queryArgs->responseLen; i++)
 	{
-		printf("%x ", responseMsg[i]);
+		printf("%x ", queryArgs->responseMsg[i]);
 	}
+
 	printf("\n\n\n");
-	RESPONSE* response = parseResponse(responseMsg, responseLen, requestLen);
+	RESPONSE* response = parseResponse(queryArgs->responseMsg, queryArgs->responseLen, queryArgs->queryLen);
 	printResult(response, NULL);
 	return 0;
 }
 
+void setQueryQuestion(unsigned char *domainName, QUESTION *question, int queryType, int queryClass)
+{
+	question->domainName = (unsigned char *)malloc(MAX_SIZE);
+	strcpy((char *)question->domainName, (char *)domainName);
+	question->qtype = (unsigned short)queryType;
+	question->qclass = (unsigned short)queryClass;
+}
+
+int printQueryToBuf(QUERY *query, unsigned char *buffer, int *bufferSize, int isReversal)
+{
+	if (query == NULL)
+	{
+		perror("NULL pinter!");
+		return FAIL;
+	}
+	else
+	{
+		if (query->header == NULL || query->question_sec == NULL)
+		{
+			perror("NULL pinter!");
+			return FAIL;
+		}
+		else
+		{
+			unsigned short *tmp = (unsigned short *)buffer;
+			*tmp = htons(query->header->conversation_id);
+			tmp++;
+			buffer[2] = 0x00 | (query->header->qr_flag << 7) | (query->header->opcode_flag << 3) | (query->header->aa_flag << 2) | (query->header->tc_flag << 1) | (query->header->rd_flag);
+			buffer[3] = 0x00 | (query->header->ra_flag << 7) | (query->header->rcode_flag);
+			tmp++;
+			*tmp = htons(query->header->qd_count);
+			tmp++;
+			*tmp = htons(query->header->an_count);
+			tmp++;
+			*tmp = htons(query->header->ns_count);
+			tmp++;
+			*tmp = htons(query->header->ar_count);	//　拷贝header到缓冲区
+			int netStrLen = 0;
+			unsigned char *netStr = NULL;
+			if (query->question_sec->domainName == NULL)
+			{
+				perror("NULL pinter!");
+				return FAIL;
+			}
+			else
+			{
+				if (isReversal == NO)
+				{
+					netStr = changeNormalStrToNet(query->question_sec->domainName, NULL, &netStrLen, CNAME);
+				}
+				else
+				{
+					netStr = changeNormalStrToNet(query->question_sec->domainName, NULL, &netStrLen, A);
+				}
+			}
+			// printf("Net str length: %d\n", netStrLen);
+			memcpy(buffer + 12, netStr, netStrLen);
+			tmp = (unsigned short *)(buffer + 12 + netStrLen);
+			*tmp = htons(query->question_sec->qtype);
+			tmp++;
+			*tmp = htons(query->question_sec->qclass);
+			*bufferSize = (unsigned char *)tmp - buffer + 2;
+			// printf("Buffer size: %d\n", *bufferSize);
+			return OK;
+		}	
+	}
+}
 
 int setQueryMsg(char *domainName, unsigned char *buffer, int queryType, int queryClass)
 {
@@ -372,7 +471,7 @@ unsigned char *changeNetStrToNormal(unsigned char *netStr, int *netStrLen, int *
 				if (netStr[cursor] == 0)
 				{
 					(*netStrLen)++;
-					buffer[--(*normalStrLen)] = '\0';
+					buffer[*normalStrLen] = '\0';
 					break;
 				}
 				else if ((netStr[cursor] >> 6) & 0x03 == 0x03)
@@ -407,7 +506,48 @@ unsigned char *changeNetStrToNormal(unsigned char *netStr, int *netStrLen, int *
 
 unsigned char *changeNormalStrToNet(unsigned char *normalStr, int *normalStrLen, int *netStrLen, int netStrType)
 {
-	return NULL;
+	unsigned char *result = (unsigned char *)malloc(MAX_SIZE);
+	memset(result, 0, MAX_SIZE);
+	int cursor = 0;
+	unsigned char *counter = result;
+	switch (netStrType)
+	{
+	case CNAME:
+		while (normalStr[0] != '\0')
+		{
+			for (*counter = 0; normalStr[cursor] != '.' && normalStr[cursor] != '\0'; (*counter)++)
+			{
+				result[cursor + 1] = normalStr[cursor];
+				cursor++;
+			}
+			// Set counter
+			counter = result + 1 + cursor;
+			if (normalStr[cursor] == '\0')
+			{
+				cursor++;
+				break;
+			}
+			else
+			{
+				cursor++;
+			}
+		}
+		result[cursor++] = 0;			// Set end of buffer	
+		break;
+	case A:
+		break;
+	default:
+		break;
+	}
+	if (netStrLen != NULL)
+	{
+		*netStrLen = cursor;
+	}
+	if (normalStrLen != NULL)
+	{
+		*normalStrLen = strlen((char *)normalStr);
+	}
+	return result;
 }
 
 int printResult(RESPONSE *response, p_option_t *print_options)
@@ -415,7 +555,7 @@ int printResult(RESPONSE *response, p_option_t *print_options)
 	printf("----------start----------");
 	printf("\nHeader section:\n\n");
 	printf("Conversation id: %d\n" 
-		"Query or response flag: %d\n",
+		"Query or response flag: %d\n"
 		"Operation code flag: %d\n"
 		"Authoritive answer flag: %d\n"
 		"Truncated flag: %d\n"
@@ -481,7 +621,39 @@ int printResult(RESPONSE *response, p_option_t *print_options)
 	return 0;
 }
 
-int setQueryHeader(DNS_HEADER *header, int operation_code, int truncated, int recursionDesirable)
+void setQueryHeader(DNS_HEADER *header, int operation_code, int truncated, int recursionDesirable)
 {
-	return 0;
+	header->conversation_id = rand() % MAX_ID;
+	header->qr_flag = 0;
+	header->opcode_flag = operation_code;
+	header->aa_flag = 0;
+	header->tc_flag = truncated;
+	header->rd_flag = recursionDesirable;
+	header->ra_flag = 0;
+	header->rcode_flag = 0;
+	header->qd_count = 1;
+	header->an_count = 0;
+	header->ns_count = 0;
+	header->ar_count = 0;
+}
+
+void setArgs(int argc, char *argv[], args_pack_t *args)
+{
+
+}
+
+void initArgs(args_pack_t *args)
+{
+	// 查询参数默认值
+	args->queryType = A;
+	args->queryClass = IN_DATA;
+	args->operationCode = STD_QUERY;
+	args->truncated = NO;
+	args->recursionDesirable = YES;
+	args->isReversal = NO;
+	strcpy((char *)args->queryDomainName, ".");
+	memset(args->queryMsg, 0, MAX_SIZE);
+	memset(args->responseMsg, 0, MAX_SIZE);
+	args->queryLen = 0;
+	args->responseLen = 0;
 }
