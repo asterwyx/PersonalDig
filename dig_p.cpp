@@ -11,11 +11,11 @@
 
 
 #define DNS_SERVER 		"127.0.0.53"	// Local DNS server
-#define SERV_PORT 		53			// Standard DNS query port
-#define A 				1						// A record type
-#define NS 				2					// NS record type
-#define CNAME 			5					// CNAME record type
-#define IN_DATA 	1			// Internet query class
+#define SERV_PORT 		53				// Standard DNS query port
+#define A 				1				// A record type
+#define NS 				2				// NS record type
+#define CNAME 			5				// CNAME record type
+#define IN_DATA 		1				// Internet query class
 #define MAX_SIZE 		2048
 #define MAX_MALLOC_TRY 	3
 #define OK				0
@@ -24,6 +24,9 @@
 #define NO				0
 #define STD_QUERY  		0
 #define MAX_ID			10000
+#define MAX_LAYERS		20				// 允许查询主机域名的最大长度
+
+
 typedef unsigned char byte;
 #pragma pack(1)
 typedef struct dns_header {
@@ -76,26 +79,29 @@ typedef struct response {
 typedef struct print_option
 {
 	// TODO
-	bool noall;			// Have no all below, just display answers
-	bool nocomments;	// Have no prompt
-	bool nostats;		// Have no stats
-	bool noquestions;	// Have no question section
-	bool noadditional;	// Have no additional section
+	byte noall;			// Have no all below, just display answers
+	byte nocomments;	// Have no prompt
+	byte nostats;		// Have no stats
+	byte noquestions;	// Have no question section
+	byte noadditional;	// Have no additional section
 } p_option_t;
 
 typedef struct args_pack
 {
-	int queryType;
-	int queryClass;
-	int operationCode;
-	int truncated;
-	int recursionDesirable;
-	int isReversal;
-	unsigned char queryDomainName[MAX_SIZE];
-	unsigned char queryMsg[MAX_SIZE];
-	unsigned char responseMsg[MAX_SIZE];
-	int queryLen;
-	int responseLen;
+	int queryType;								// 查询种类，A或者NS或者CNAME
+	int queryClass;								// 查询类别，IN或者CH或者其他
+	int operationCode;							// 查询操作，标准查询等
+	int truncated;								// 是否可截断
+	int recursionDesirable;						// 是否期待递归查询
+	int isReversal;								// 是否反解析
+	unsigned char queryDomainName[MAX_SIZE];	// 查询的域名
+	unsigned char queryMsg[MAX_SIZE];			// 查询DNS报文
+	unsigned char responseMsg[MAX_SIZE];		// 响应DNS报文
+	int queryLen;								// 查询的报文长度
+	int responseLen;							// 响应的报文长度
+	char serverAddr[MAX_SIZE];					// 使用的DNS服务器，默认是读取/etc/resolv.conf中的内容，选取第一个
+	unsigned short serverPort;					// 使用的查询端口，默认为53
+	byte trace_on;								// 是否开启追踪模式
 } args_pack_t;
 
 static short conversationId = 0;
@@ -109,6 +115,9 @@ int printResult(RESPONSE *response, p_option_t *print_options);																	
 void setQueryHeader(DNS_HEADER *header, int operation_code, int truncated, int recursionDesirable);										// Set header by arg
 void setArgs(int argc, char *argv[], args_pack_t *args);
 void initArgs(args_pack_t *args);
+void sendQuery(QUERY *query, RESPONSE **response, args_pack_t *args);
+unsigned char** splitDomainNameToLayers(char *domainName, int *layerNum);
+
 
 // Main function
 int main(int argc, char *argv[])
@@ -121,8 +130,7 @@ int main(int argc, char *argv[])
 	}
 	// Try to query from DNS server set by /etc/resolv.conf
 	// First Mannuly set server
-	// Set query message
-	//requestLen = setQueryMsg(queryDomainName, queryMsg, A, INTERNET_DATA);		// Query A record of domain name
+	
 	QUERY *query = (QUERY *)malloc(sizeof(QUERY));
 	if (query == NULL)
 	{
@@ -133,48 +141,47 @@ int main(int argc, char *argv[])
 	query->question_sec = (QUESTION *)malloc(sizeof(QUESTION));
 	setQueryHeader(query->header, queryArgs->operationCode, queryArgs->truncated, queryArgs->recursionDesirable);
 	setQueryQuestion(queryArgs->queryDomainName, query->question_sec, queryArgs->queryType, queryArgs->queryClass);
-	printQueryToBuf(query, queryArgs->queryMsg, &queryArgs->queryLen, queryArgs->isReversal);
-	
-	// For debugging, print request
-	
-	for (int i = 0; i < queryArgs->queryLen; i++)
+	RESPONSE* response = NULL;	
+	if (queryArgs->trace_on == NO)
 	{
-		printf("%x ", queryArgs->queryMsg[i]);
-	}
-	printf("\n");
-	
-	struct sockaddr_in dest_addr;
-	memset(&dest_addr, 0, sizeof(struct sockaddr_in));
-	dest_addr.sin_addr.s_addr = inet_addr(DNS_SERVER);
-	dest_addr.sin_family = AF_INET;
-	dest_addr.sin_port = htons(SERV_PORT);
-	int sendSock = socket(PF_INET, SOCK_DGRAM, 0);
-	int sentSize = sendto(sendSock, queryArgs->queryMsg, queryArgs->queryLen, 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
-	if (sentSize > 0)
-	{
-		printf("Successfully send queries!\n");
-		printf("Sent size: %d\n", sentSize);
+		sendQuery(query, &response, queryArgs);
+		printResult(response, NULL);	
 	}
 	else
 	{
-		printf("Failed!\n");
+		char fullDomainName[MAX_SIZE] = {0};
+		strcpy(fullDomainName, (char *)queryArgs->queryDomainName);
+		int layerNum = 0;
+		unsigned char **layers = splitDomainNameToLayers(fullDomainName, &layerNum);
+		for (int i = 0; i < layerNum - 1; i++)
+		{
+			// 查询各级域名的权威服务器
+			setQueryQuestion(layers[i], query->question_sec, NS, query->question_sec->qclass);
+			sendQuery(query, &response, queryArgs);
+			p_option_t* options;
+			options->noadditional = YES;
+			options->nocomments = YES;
+			options->noquestions = YES;
+			options->nostats = YES;
+			options->noall = NO;
+			printResult(response, NULL);
+			setQueryQuestion(response->answer_sec->data, query->question_sec, A, query->question_sec->qclass);
+			sendQuery(query, &response, queryArgs);
+			for (int i = 0; i < response->header->an_count; i++)
+			{
+				if (response->answer_sec[i].type == A)
+				{
+					strcpy(queryArgs->serverAddr, (char *)response->answer_sec[i].data);
+					break;
+				}
+			}
+		}
+		// 向最新获得的域名DNS服务器发送查询
+		setQueryQuestion(layers[layerNum - 1], query->question_sec, queryArgs->queryType, query->question_sec->qclass);
+		sendQuery(query, &response, queryArgs);
+		printResult(response, NULL);
 	}
-	queryArgs->responseLen = recv(sendSock, queryArgs->responseMsg, MAX_SIZE, 0);
 	
-	// Close socket
-	close(sendSock);
-
-	printf("Received size: %d\n", queryArgs->responseLen);	
-	// For debugging, print reponse
-	
-	for (int i = 0; i < queryArgs->responseLen; i++)
-	{
-		printf("%x ", queryArgs->responseMsg[i]);
-	}
-
-	printf("\n\n\n");
-	RESPONSE* response = parseResponse(queryArgs->responseMsg, queryArgs->responseLen, queryArgs->queryLen);
-	printResult(response, NULL);
 	return 0;
 }
 
@@ -656,4 +663,65 @@ void initArgs(args_pack_t *args)
 	memset(args->responseMsg, 0, MAX_SIZE);
 	args->queryLen = 0;
 	args->responseLen = 0;
+	strcpy(args->serverAddr, DNS_SERVER);
+	args->serverPort = SERV_PORT;
+	args->trace_on = NO;
+}
+
+void sendQuery(QUERY *query, RESPONSE **response, args_pack_t *args)
+{
+	struct sockaddr_in dest_addr;
+	memset(&dest_addr, 0, sizeof(struct sockaddr_in));
+	dest_addr.sin_addr.s_addr = inet_addr(args->serverAddr);
+	dest_addr.sin_family = AF_INET;
+	dest_addr.sin_port = htons(args->serverPort);
+	printQueryToBuf(query, args->queryMsg, &args->queryLen, args->isReversal);
+	int sendSock = socket(PF_INET, SOCK_DGRAM, 0);
+	int sentSize = sendto(sendSock, args->queryMsg, args->queryLen, 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+	if (sentSize > 0)
+	{
+		printf("Successfully send queries!\n");
+		printf("Sent size: %d\n", sentSize);
+	}
+	else
+	{
+		printf("Failed!\n");
+	}
+	args->responseLen = recv(sendSock, args->responseMsg, MAX_SIZE, 0);
+	
+	// Close socket
+	close(sendSock);
+
+	printf("Received size: %d\n", args->responseLen);	
+	// For debugging, print reponse
+	
+	for (int i = 0; i < args->responseLen; i++)
+	{
+		printf("%x ", args->responseMsg[i]);
+	}
+
+	printf("\n\n\n");
+	*response = parseResponse(args->responseMsg, args->responseLen, args->queryLen);
+}
+
+unsigned char** splitDomainNameToLayers(char *domainName, int *layerNum)
+{
+	unsigned char **layers;
+	layers = (unsigned char **)malloc(sizeof(unsigned char *) * MAX_LAYERS);
+	for (int i = 0; i < MAX_LAYERS; i++)
+	{
+		layers[i] = (unsigned char *)malloc(MAX_SIZE);
+	}
+	int nameLen = strlen(domainName);
+	int j = 0;
+	strcpy((char *)layers[j++], ".");
+	for (int i = nameLen; i >= 0; i--)
+	{
+		if (domainName[i] == '.')
+		{
+			strcpy((char *)layers[j++], domainName + i + 1);
+		}
+	}
+	*layerNum = j;
+	return layers;
 }
