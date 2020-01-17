@@ -30,19 +30,19 @@
 typedef unsigned char byte;
 #pragma pack(1)
 typedef struct dns_header {
-	unsigned short conversation_id;  // Conversation identifier
-	unsigned short qr_flag:1;     // Query or response flag, 0 for query, 1 for response
-	unsigned short opcode_flag:4; // Operation code flag, 0 for standard query, 1 for reversal query, 2 for server status request
-	unsigned short aa_flag:1;     // Authoritive answer, only response will set this
-	unsigned short tc_flag:1;     // 1 for truncated, 0 for not
-	unsigned short rd_flag:1;     // Desire recursive query
-	unsigned short ra_flag:1;     // Whether recursive query is available
+	unsigned short conversation_id; // Conversation identifier
+	unsigned short qr_flag:1;     	// Query or response flag, 0 for query, 1 for response
+	unsigned short opcode_flag:4; 	// Operation code flag, 0 for standard query, 1 for reversal query, 2 for server status request
+	unsigned short aa_flag:1;     	// Authoritive answer, only response will set this
+	unsigned short tc_flag:1;     	// 1 for truncated, 0 for not
+	unsigned short rd_flag:1;     	// Desire recursive query
+	unsigned short ra_flag:1;     	// Whether recursive query is available
 	unsigned short :3;
-	unsigned short rcode_flag:4;  // Return code, 0 for success, 3 for name error, 2 for server error
-	unsigned short qd_count;			// Queries count
-	unsigned short an_count;			// Answers count
-	unsigned short ns_count;			// Number of name server resource records
-	unsigned short ar_count;			// Number of resource records in the additional records section
+	unsigned short rcode_flag:4;  	// Return code, 0 for success, 3 for name error, 2 for server error
+	unsigned short qd_count;		// Queries count
+	unsigned short an_count;		// Answers count
+	unsigned short ns_count;		// Number of name server resource records
+	unsigned short ar_count;		// Number of resource records in the additional records section
 } DNS_HEADER;
 #pragma pack()
 
@@ -665,7 +665,7 @@ void initArgs(args_pack_t *args)
 	args->responseLen = 0;
 	strcpy(args->serverAddr, DNS_SERVER);
 	args->serverPort = SERV_PORT;
-	args->trace_on = NO;
+	args->trace_on = YES;
 }
 
 void sendQuery(QUERY *query, RESPONSE **response, args_pack_t *args)
