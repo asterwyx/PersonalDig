@@ -86,7 +86,6 @@ typedef struct response {
 
 typedef struct print_option
 {
-	// TODO
 	byte noall;			// Have no all below, just display answers
 	byte nocomments;	// Have no prompt
 	byte nostats;		// Have no stats
@@ -115,7 +114,7 @@ typedef struct args_pack
 static short conversationId = 0;
 void setQueryQuestion(unsigned char *domainName, QUESTION *question, int queryType, int queryClass);
 int printQueryToBuf(QUERY *query, unsigned char *buffer, int *bufferSize, int isReversal);
-int setQueryMsg(char *domainName, unsigned char *buffer, int queryType, int queryClass);												// Set query struct
+// int setQueryMsg(char *domainName, unsigned char *buffer, int queryType, int queryClass);												// Set query struct
 RESPONSE* parseResponse(unsigned char *response, int responseLen, int queryLen);														// Parse DNS response
 unsigned char *changeNetStrToNormal(unsigned char *netStr, int *netStrLem, int *normalStrLen, int netStrType, unsigned char *context);	// Change net form to normal
 unsigned char *changeNormalStrToNet(unsigned char *normalStr, int *normalStrLen, int *netStrLen, int netStrType);						// Change normal form to net
@@ -174,25 +173,128 @@ int main(int argc, char *argv[])
 			options->noquestions = YES;
 			options->nostats = YES;
 			options->noall = NO;
-			printResult(response, NULL);
-			setQueryQuestion(response->answer_sec->data, query->question_sec, A, query->question_sec->qclass);
-			sendQuery(query, &response, queryArgs);
-			printResult(response, NULL);
+			printResult(response, options);
+			int hasAddr = NO;
 			for (int i = 0; i < response->header->an_count; i++)
 			{
 				if (response->answer_sec[i].type == A)
 				{
 					strcpy(queryArgs->serverAddr, (char *)response->answer_sec[i].data);
+					hasAddr = YES;
 					break;
 				}
 			}
+			for (int i = 0; i < response->header->ns_count; i++)
+			{
+				if (hasAddr == YES)
+				{
+					break;
+				}
+				
+				if (response->authority_sec[i].type == A)
+				{
+					strcpy(queryArgs->serverAddr, (char *)response->authority_sec[i].data);
+					hasAddr = YES;
+					break;
+				}
+			}
+			for (int i = 0; i < response->header->ar_count; i++)
+			{
+				if (hasAddr == YES)
+				{
+					break;
+				}
+				if (response->additional_sec[i].type == A)
+				{
+					strcpy(queryArgs->serverAddr, (char *)response->additional_sec[i].data);
+					hasAddr = YES;
+					break;
+				}
+			}
+			if (hasAddr == YES)
+			{
+				continue;
+			}
+			int hasSetNewQuery = NO;
+			for (int i = 0; i < response->header->an_count; i++)
+			{
+				if (response->answer_sec[i].type == NS)
+				{
+					setQueryQuestion(response->answer_sec[i].data, query->question_sec, A, query->question_sec->qclass);
+					hasSetNewQuery = YES;
+					break;
+				}
+			}
+			for (int i = 0; i < response->header->ns_count; i++)
+			{
+				if (hasSetNewQuery == YES)
+				{
+					break;
+				}
+				
+				if (response->authority_sec[i].type == NS)
+				{
+					setQueryQuestion(response->authority_sec[i].data, query->question_sec, A, query->question_sec->qclass);
+					hasSetNewQuery = YES;
+					break;
+				}
+			}
+			for (int i = 0; i < response->header->ar_count; i++)
+			{
+				if (hasSetNewQuery == YES)
+				{
+					break;
+				}
+				
+				if (response->additional_sec[i].type == NS)
+				{
+					setQueryQuestion(response->additional_sec[i].data, query->question_sec, A, query->question_sec->qclass);
+					hasSetNewQuery = YES;
+					break;
+				}
+			}
+			if (hasSetNewQuery == YES)
+			{
+				sendQuery(query, &response, queryArgs);
+				printResult(response, NULL);
+				for (int i = 0; i < response->header->an_count; i++)
+				{
+					if (response->answer_sec[i].type == A)
+					{
+						strcpy(queryArgs->serverAddr, (char *)response->answer_sec[i].data);
+						break;
+					}
+				}	
+			}
+			else
+			{
+				perror("Can't find address");
+			}
 		}
 		// 向最新获得的域名DNS服务器发送查询
-		setQueryQuestion(layers[layerNum - 1], query->question_sec, queryArgs->queryType, query->question_sec->qclass);
+		setQueryQuestion(layers[layerNum - 1], query->question_sec, queryArgs->queryType, queryArgs->queryClass);
 		sendQuery(query, &response, queryArgs);
 		printResult(response, NULL);
+		// 检查是否得到需要的结果
+		int hasResult = NO;
+		for (int i = 0; i < response->header->an_count; i++)
+		{
+			if (response->answer_sec[i].type == queryArgs->queryType && response->answer_sec[i]._class == queryArgs->queryClass)
+			{
+				hasResult = YES;
+				break;
+			}
+		}
+		if (hasResult == NO)
+		{
+			for (int i = 0; i < response->header->an_count; i++)
+			{
+				setQueryQuestion(response->answer_sec[i].data, query->question_sec, queryArgs->queryType, query->question_sec->qclass);
+				sendQuery(query, &response, queryArgs);
+				printResult(response, NULL);
+			}		
+		}
 	}
-	
 	return 0;
 }
 
@@ -264,60 +366,60 @@ int printQueryToBuf(QUERY *query, unsigned char *buffer, int *bufferSize, int is
 	}
 }
 
-int setQueryMsg(char *domainName, unsigned char *buffer, int queryType, int queryClass)
-{
-	if (domainName == NULL || buffer == NULL)
-	{
-		perror("NULL pointer");
-		return 0;
-	}
+// int setQueryMsg(char *domainName, unsigned char *buffer, int queryType, int queryClass)
+// {
+// 	if (domainName == NULL || buffer == NULL)
+// 	{
+// 		perror("NULL pointer");
+// 		return 0;
+// 	}
 
-	// Temporary set 0
-	buffer[0] = 0x00;
-	buffer[1] = 0;
-	buffer[2] = 0x01;			// Represent queryMsg
-	buffer[3] = 0;				
-	buffer[4] = 0;
-	buffer[5] = 1;				// One query
+// 	// Temporary set 0
+// 	buffer[0] = 0x00;
+// 	buffer[1] = 0;
+// 	buffer[2] = 0x01;			// Represent queryMsg
+// 	buffer[3] = 0;				
+// 	buffer[4] = 0;
+// 	buffer[5] = 1;				// One query
 
-	// All set 0
-	for (int i = 6; i < 12; i++)
-	{
-		buffer[i] = 0;
-	}
+// 	// All set 0
+// 	for (int i = 6; i < 12; i++)
+// 	{
+// 		buffer[i] = 0;
+// 	}
 	
-	// Set domain name
-	// Split domain name
-	int cursor = 0;
-	unsigned char *name = buffer + 12;
-	unsigned char *counter = name;
-	while (domainName[0] != '\0')
-	{
-		for (*counter = 0; domainName[cursor] != '.' && domainName[cursor] != '\0'; (*counter)++)
-		{
-			name[cursor + 1] = domainName[cursor];
-			cursor++;
-		}
-		// Set counter
-		counter = name + 1 + cursor;
-		if (domainName[cursor] == '\0')
-		{
-			cursor++;
-			break;
-		}
-		else
-		{
-			cursor++;
-		}
-	}
-	name[cursor++] = 0;			// Set end of buffer
-	// Now buffer has correct data and form
-	name[cursor] = 0;
-	name[cursor + 1] = queryType;	// Set query type
-	name[cursor + 2] = 0;
-	name[cursor + 3] = queryClass;	// Set query class
-	return cursor + 16;
-}
+// 	// Set domain name
+// 	// Split domain name
+// 	int cursor = 0;
+// 	unsigned char *name = buffer + 12;
+// 	unsigned char *counter = name;
+// 	while (domainName[0] != '\0')
+// 	{
+// 		for (*counter = 0; domainName[cursor] != '.' && domainName[cursor] != '\0'; (*counter)++)
+// 		{
+// 			name[cursor + 1] = domainName[cursor];
+// 			cursor++;
+// 		}
+// 		// Set counter
+// 		counter = name + 1 + cursor;
+// 		if (domainName[cursor] == '\0')
+// 		{
+// 			cursor++;
+// 			break;
+// 		}
+// 		else
+// 		{
+// 			cursor++;
+// 		}
+// 	}
+// 	name[cursor++] = 0;			// Set end of buffer
+// 	// Now buffer has correct data and form
+// 	name[cursor] = 0;
+// 	name[cursor + 1] = queryType;	// Set query type
+// 	name[cursor + 2] = 0;
+// 	name[cursor + 3] = queryClass;	// Set query class
+// 	return cursor + 16;
+// }
 
 
 RESPONSE* parseResponse(unsigned char *response, int responseLen, int queryLen)
@@ -475,6 +577,7 @@ unsigned char *changeNetStrToNormal(unsigned char *netStr, int *netStrLen, int *
 	*netStrLen = 0;
 	*normalStrLen = 0;
 	char *buffer = (char *)malloc(MAX_SIZE);
+	memset(buffer, 0, MAX_SIZE);
 	int cursor = 0;
 	switch (netStrType)
 	{
@@ -522,6 +625,15 @@ unsigned char *changeNetStrToNormal(unsigned char *netStr, int *netStrLen, int *
 					}
 				}	
 			}
+			break;
+		case AAAA:
+			*netStrLen = 16;
+			for (int i = 0; i < 8; i++)
+			{
+				sprintf(buffer + strlen(buffer), "%x%x:",netStr[2 * i], netStr[2 * i + 1]);
+			}
+			*normalStrLen = strlen(buffer);
+			buffer[--(*normalStrLen)] = '\0';
 			break;
 		default:
 			break;
@@ -692,7 +804,7 @@ void initArgs(args_pack_t *args)
 	args->responseLen = 0;
 	strcpy(args->serverAddr, DNS_SERVER);
 	args->serverPort = SERV_PORT;
-	args->trace_on = YES;
+	args->trace_on = NO;
 }
 
 void sendQuery(QUERY *query, RESPONSE **response, args_pack_t *args)
@@ -704,7 +816,7 @@ void sendQuery(QUERY *query, RESPONSE **response, args_pack_t *args)
 	dest_addr.sin_port = htons(args->serverPort);
 	printQueryToBuf(query, args->queryMsg, &args->queryLen, args->isReversal);
 	// debug macro
-	DEBUG_BUF(args->queryMsg, args->queryLen, "Query message:");
+	// DEBUG_BUF(args->queryMsg, args->queryLen, "Query message:");
 	int sendSock = socket(PF_INET, SOCK_DGRAM, 0);
 	int sentSize = sendto(sendSock, args->queryMsg, args->queryLen, 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
 	if (sentSize > 0)
@@ -724,12 +836,12 @@ void sendQuery(QUERY *query, RESPONSE **response, args_pack_t *args)
 	printf("Received size: %d\n", args->responseLen);	
 	// For debugging, print reponse
 	
-	for (int i = 0; i < args->responseLen; i++)
-	{
-		printf("%x ", args->responseMsg[i]);
-	}
+	// for (int i = 0; i < args->responseLen; i++)
+	// {
+	// 	printf("%x ", args->responseMsg[i]);
+	// }
 
-	printf("\n\n\n");
+	printf("\n");
 	*response = parseResponse(args->responseMsg, args->responseLen, args->queryLen);
 }
 
@@ -751,6 +863,7 @@ unsigned char** splitDomainNameToLayers(char *domainName, int *layerNum)
 			strcpy((char *)layers[j++], domainName + i + 1);
 		}
 	}
+	strcpy((char *)layers[j++], domainName);
 	*layerNum = j;
 	return layers;
 }
